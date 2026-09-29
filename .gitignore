@@ -1,7 +1,39 @@
+# Build artifacts
+target/
+**/target/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+*.swp
+*.swo
+
+# OODA scratch artefacts (keep dir, ignore contents)
+.ooda/*
+!.ooda/.gitkeep
 
 # Beads / Dolt files (added by bd init)
 .dolt/
-*.db
-.beads-credential-key
+
+# Beads issues export — internal planning history, not for public history.
+# bd regenerates this file from the Dolt store; ignoring it keeps it local.
+.beads/issues.jsonl
+.beads/events.jsonl
+
+# Bead-db rollback backups (local artefacts; keep out of git)
+.beads.backup-*
+
+# bd runtime artefacts regenerated on demand (workspace gate lock, and the
+# auto-import dedup marker keyed to .beads/issues.jsonl). Never source.
+.beads.gate.lock
+.beads/.auto-import-issues.jsonl
 .beads/proxieddb/
 *.gate.lock*
+
+# opencode plugin deps
+.opencode/node_modules/
+*.db
+.beads-credential-key
+*.pem
