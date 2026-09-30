@@ -50,6 +50,7 @@ starting with `non-exhaustive-check`:
   timeout 900 cargo test --workspace --all-features --locked --no-fail-fast
   cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
   cargo fmt --all -- --check
+  sh scripts/verify.sh
   ```
 - `cargo deny check` and `cargo audit` are supply-chain gates; run
   before publishing or bumping dependencies.
