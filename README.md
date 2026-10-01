@@ -56,7 +56,7 @@ is_error_type && has_non_exhaustive
   VIOLATION	crates/foo/src/error.rs:12	FooError	forbidden #[non_exhaustive] on error enum (C4.5/C4.6 closed enumeration policy)
   SUMMARY: 1 library crates scanned, 166 pub enums, 1 violations
   ```
-- **Exit 101**: invalid invocation or unreadable/unparseable Rust sources.
+- **Exit 2**: environmental error (missing source directory, no Rust sources found, unreadable or unparseable source files, or invalid CLI arguments). Diagnostics and errors are written to stderr.
 
 ## License
 

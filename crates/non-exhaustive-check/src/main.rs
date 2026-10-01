@@ -8,11 +8,12 @@
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use clap::Parser;
+
 const HELP_TEXT: &str =
     "non-exhaustive-check - CI hard-gate enforcing CLOSED error enums (C4.5/C4.6)
-
-USAGE:
-    non-exhaustive-check SOURCE_DIRECTORY...
 
 Directories are required. tools/tripwires.sh non-exhaustive resolves library
 targets from locked Cargo metadata, including external Cherry dependencies.
@@ -36,7 +37,20 @@ LIMITS:
 OUTPUT:
     Exit 0 and a terse OK summary on stdout when clean.
     Exit 1 with one VIOLATION line per finding, tab-separated, then a summary.
+    Exit 2 on environmental error (missing source dir, no rust sources, parse failure, missing args).
 ";
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "non-exhaustive-check",
+    version,
+    about = "CI hard-gate enforcing CLOSED error enums (C4.5/C4.6)",
+    long_about = HELP_TEXT
+)]
+struct Cli {
+    #[arg(required = true, value_name = "SOURCE_DIRECTORY")]
+    sources: Vec<PathBuf>,
+}
 
 #[derive(Debug)]
 struct Violation {
@@ -45,34 +59,69 @@ struct Violation {
     enum_name: String,
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        print!("{HELP_TEXT}");
-        return;
-    }
+#[derive(Debug)]
+enum ScanOutcome {
+    HelpOrVersion(String),
+    Clean {
+        crates_scanned: usize,
+        enums_scanned: usize,
+    },
+    Violation {
+        crates_scanned: usize,
+        enums_scanned: usize,
+        violations: Vec<Violation>,
+    },
+}
 
-    assert!(!args.is_empty(), "source directories are required");
+#[derive(Debug)]
+enum EnvError {
+    Usage(String),
+    MissingSourceDir(PathBuf),
+    ReadDirFailed(PathBuf, std::io::Error),
+    NoRustSources(PathBuf),
+    ReadFileFailed(PathBuf, std::io::Error),
+    ParseFileFailed(PathBuf, syn::Error),
+}
+
+fn run() -> Result<ScanOutcome, EnvError> {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            let msg = err.to_string();
+            return if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) {
+                Ok(ScanOutcome::HelpOrVersion(msg))
+            } else {
+                Err(EnvError::Usage(msg))
+            };
+        }
+    };
 
     let mut crates_scanned = 0usize;
     let mut enums_scanned = 0usize;
     let mut violations: Vec<Violation> = Vec::new();
 
-    for source in &args {
-        let src_dir = PathBuf::from(source);
-        assert!(src_dir.is_dir(), "missing source directory: {source}");
+    for src_dir in &cli.sources {
+        if !src_dir.is_dir() {
+            return Err(EnvError::MissingSourceDir(src_dir.clone()));
+        }
         crates_scanned += 1;
 
         let mut rs_files: Vec<PathBuf> = Vec::new();
-        collect_rs_files(&src_dir, &mut rs_files);
+        collect_rs_files(src_dir, &mut rs_files)
+            .map_err(|e| EnvError::ReadDirFailed(src_dir.clone(), e))?;
         rs_files.sort();
-        assert!(!rs_files.is_empty(), "no Rust sources: {source}");
+        if rs_files.is_empty() {
+            return Err(EnvError::NoRustSources(src_dir.clone()));
+        }
 
         for file in rs_files {
             let content = std::fs::read_to_string(&file)
-                .unwrap_or_else(|e| panic!("failed to read {}: {e}", file.display()));
+                .map_err(|e| EnvError::ReadFileFailed(file.clone(), e))?;
             let parsed = syn::parse_file(&content)
-                .unwrap_or_else(|e| panic!("failed to parse {}: {e}", file.display()));
+                .map_err(|e| EnvError::ParseFileFailed(file.clone(), e))?;
             let mut enums: Vec<&syn::ItemEnum> = Vec::new();
             collect_enums(&parsed.items, &mut enums);
 
@@ -91,45 +140,98 @@ fn main() {
     }
 
     if violations.is_empty() {
-        println!(
-            "OK: {crates_scanned} library crates scanned, {enums_scanned} pub enums, 0 violations (syntax-only predicate; enum count includes private declarations)"
-        );
-        std::process::exit(0);
+        Ok(ScanOutcome::Clean {
+            crates_scanned,
+            enums_scanned,
+        })
+    } else {
+        violations.sort_by_key(|v| (v.path.clone(), v.enum_name.clone()));
+        Ok(ScanOutcome::Violation {
+            crates_scanned,
+            enums_scanned,
+            violations,
+        })
     }
-
-    violations.sort_by_key(|v| (v.path.clone(), v.enum_name.clone()));
-    for v in &violations {
-        let loc = match v.line {
-            Some(l) => format!("{}:{}", v.path.display(), l),
-            None => v.path.display().to_string(),
-        };
-        println!(
-            "VIOLATION\t{}\t{}\tforbidden #[non_exhaustive] on error enum (C4.5/C4.6 closed enumeration policy)",
-            loc, v.enum_name
-        );
-    }
-    println!(
-        "SUMMARY: {crates_scanned} library crates scanned, {enums_scanned} pub enums, {} violations",
-        violations.len()
-    );
-    std::process::exit(1);
 }
 
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("failed to read dir {}: {e}", dir.display()));
+fn main() -> ExitCode {
+    match run() {
+        Ok(ScanOutcome::HelpOrVersion(msg)) => {
+            print!("{msg}");
+            ExitCode::SUCCESS
+        }
+        Ok(ScanOutcome::Clean {
+            crates_scanned,
+            enums_scanned,
+        }) => {
+            println!(
+                "OK: {crates_scanned} library crates scanned, {enums_scanned} pub enums, 0 violations (syntax-only predicate; enum count includes private declarations)"
+            );
+            ExitCode::SUCCESS
+        }
+        Ok(ScanOutcome::Violation {
+            crates_scanned,
+            enums_scanned,
+            violations,
+        }) => {
+            for v in &violations {
+                let loc = match v.line {
+                    Some(l) => format!("{}:{}", v.path.display(), l),
+                    None => v.path.display().to_string(),
+                };
+                println!(
+                    "VIOLATION\t{}\t{}\tforbidden #[non_exhaustive] on error enum (C4.5/C4.6 closed enumeration policy)",
+                    loc, v.enum_name
+                );
+            }
+            println!(
+                "SUMMARY: {crates_scanned} library crates scanned, {enums_scanned} pub enums, {} violations",
+                violations.len()
+            );
+            ExitCode::from(1)
+        }
+        Err(EnvError::Usage(msg)) => {
+            eprint!("{msg}");
+            ExitCode::from(2)
+        }
+        Err(EnvError::MissingSourceDir(path)) => {
+            eprintln!("missing source directory: {}", path.display());
+            ExitCode::from(2)
+        }
+        Err(EnvError::ReadDirFailed(path, err)) => {
+            eprintln!("failed to read directory {}: {err}", path.display());
+            ExitCode::from(2)
+        }
+        Err(EnvError::NoRustSources(path)) => {
+            eprintln!("no Rust sources: {}", path.display());
+            ExitCode::from(2)
+        }
+        Err(EnvError::ReadFileFailed(path, err)) => {
+            eprintln!("failed to read {}: {err}", path.display());
+            ExitCode::from(2)
+        }
+        Err(EnvError::ParseFileFailed(path, err)) => {
+            eprintln!("failed to parse {}: {err}", path.display());
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
+    let entries = std::fs::read_dir(dir)?;
     for entry in entries {
-        let entry = entry.expect("dir entry must read");
+        let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
             if path.file_name().and_then(|n| n.to_str()) == Some("target") {
                 continue;
             }
-            collect_rs_files(&path, out);
+            collect_rs_files(&path, out)?;
         } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
             out.push(path);
         }
     }
+    Ok(())
 }
 
 #[expect(

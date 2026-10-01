@@ -10,5 +10,6 @@ publish = false
 workspace = true
 
 [dependencies]
+clap = { workspace = true, features = ["derive"] }
 syn = { workspace = true }
 proc-macro2 = { workspace = true, features = ["span-locations"] }

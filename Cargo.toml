@@ -11,6 +11,7 @@ license = "Apache-2.0 OR MIT"
 authors = ["Mattilsynet"]
 
 [workspace.dependencies]
+clap = { version = "4", features = ["derive"] }
 proc-macro2 = "1"
 syn = { version = "3", features = ["full", "extra-traits"] }
 
